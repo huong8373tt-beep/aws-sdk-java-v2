@@ -16,6 +16,7 @@
 package software.amazon.awssdk.services.s3.internal.crt;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import software.amazon.awssdk.annotations.SdkInternalApi;
 import software.amazon.awssdk.core.ResponseInputStream;
@@ -33,10 +34,12 @@ public final class S3CrtBorrowedBufferStreamHandler {
     private final S3CrtBorrowedBufferInputStream inputStream =
         new S3CrtBorrowedBufferInputStream(() -> cancellation.thenAccept(Runnable::run),
                                            bytes -> this.readWindowAction.accept(bytes));
+    private final Consumer<GetObjectResponse> responseListener;
     private volatile LongConsumer readWindowAction;
     private volatile GetObjectResponse response;
 
-    S3CrtBorrowedBufferStreamHandler() {
+    S3CrtBorrowedBufferStreamHandler(Consumer<GetObjectResponse> responseListener) {
+        this.responseListener = responseListener;
         future.whenComplete((ignored, error) -> {
             if (error != null) {
                 inputStream.abort();
@@ -63,6 +66,10 @@ public final class S3CrtBorrowedBufferStreamHandler {
         Validate.validState(currentResponse != null, "onResponse() must be called before borrowed delivery starts");
         this.readWindowAction = readWindowAction;
         cancellation.complete(cancellationAction);
+        // Don't report a response for a download that already failed or was cancelled.
+        if (responseListener != null && !future.isDone()) {
+            responseListener.accept(currentResponse);
+        }
         future.complete(new ResponseInputStream<>(currentResponse, inputStream));
     }
 

@@ -17,6 +17,7 @@ package software.amazon.awssdk.services.s3.internal.crt;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import software.amazon.awssdk.annotations.SdkInternalApi;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.async.AsyncResponseTransformer;
@@ -37,13 +38,26 @@ import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 public final class S3CrtBorrowedBufferBlockingResponseTransformer
     implements AsyncResponseTransformer<GetObjectResponse, ResponseInputStream<GetObjectResponse>> {
 
+    private final Consumer<GetObjectResponse> responseListener;
     // Preserves cancellation across a cross-region redirect that creates a new request attempt.
     private volatile boolean aborted;
     private volatile S3CrtBorrowedBufferStreamHandler currentAttempt;
 
+    S3CrtBorrowedBufferBlockingResponseTransformer() {
+        this(null);
+    }
+
+    /**
+     * Creates a transformer whose {@code responseListener}, if not {@code null}, is notified with the response of the attempt
+     * that starts the stream, before the future returned by {@link #prepare()} completes.
+     */
+    S3CrtBorrowedBufferBlockingResponseTransformer(Consumer<GetObjectResponse> responseListener) {
+        this.responseListener = responseListener;
+    }
+
     @Override
     public CompletableFuture<ResponseInputStream<GetObjectResponse>> prepare() {
-        S3CrtBorrowedBufferStreamHandler attempt = new S3CrtBorrowedBufferStreamHandler();
+        S3CrtBorrowedBufferStreamHandler attempt = new S3CrtBorrowedBufferStreamHandler(responseListener);
         currentAttempt = attempt;
         if (aborted) {
             attempt.onBorrowedStreamAbort();

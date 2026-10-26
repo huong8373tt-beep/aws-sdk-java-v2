@@ -38,7 +38,8 @@ import software.amazon.awssdk.utils.Validate;
 /**
  * Adapts CRT borrowed-buffer {@link GetObjectResponse} callbacks to an {@link S3CrtBorrowedBufferStreamHandler}.
  *
- * <p>Headers, progress and request completion go through {@link S3CrtResponseHandlerAdapter}.
+ * <p>Headers, progress and request completion go through {@link S3CrtResponseHandlerAdapter}. A failure after the stream starts
+ * is also reported to the progress listener, because the {@code getObject} future has already completed by then.
  */
 @SdkInternalApi
 public final class S3CrtBorrowedBufferResponseHandlerAdapter
@@ -48,6 +49,7 @@ public final class S3CrtBorrowedBufferResponseHandlerAdapter
     private final S3CrtResponseHandlerAdapter delegate;
     private final CompletableFuture<Void> executeFuture;
     private final S3CrtBorrowedBufferStreamHandler streamHandler;
+    private final PublisherListener<S3MetaRequestProgress> progressListener;
     private final CompletableFuture<S3MetaRequestWrapper> metaRequestFuture;
     private final AtomicBoolean streamInitiated = new AtomicBoolean();
     private long nextObjectRangeStart;
@@ -57,6 +59,7 @@ public final class S3CrtBorrowedBufferResponseHandlerAdapter
         this.delegate = new S3CrtResponseHandlerAdapter(this.executeFuture, builder.responseHandler, builder.progressListener,
                                                        builder.metaRequestFuture);
         this.streamHandler = Validate.paramNotNull(builder.streamHandler, "streamHandler");
+        this.progressListener = builder.progressListener;
         this.metaRequestFuture = builder.metaRequestFuture;
         executeFuture.whenComplete((ignored, error) -> {
             if (error != null) {
@@ -68,6 +71,12 @@ public final class S3CrtBorrowedBufferResponseHandlerAdapter
                     }
                 } catch (Throwable notificationFailure) {
                     log.error(() -> "Failed to notify borrowed response stream of request failure", notificationFailure);
+                }
+                // Before the stream is published, the getObject future reports failures, including a cross-region redirect
+                // that the client retries. After publication, report failures through the progress listener so Transfer
+                // Manager can emit the terminal failure event.
+                if (streamInitiated.get()) {
+                    notifyProgressListenerOnError(error);
                 }
             }
         });
@@ -174,6 +183,17 @@ public final class S3CrtBorrowedBufferResponseHandlerAdapter
             delegate.failResponseHandlerAndFuture(failure);
         } catch (Throwable notificationFailure) {
             log.error(() -> "Failed to report borrowed response failure", notificationFailure);
+        }
+    }
+
+    private void notifyProgressListenerOnError(Throwable error) {
+        if (progressListener == null) {
+            return;
+        }
+        try {
+            progressListener.subscriberOnError(error);
+        } catch (Throwable notificationFailure) {
+            log.error(() -> "Failed to notify progress listener of request failure", notificationFailure);
         }
     }
 
